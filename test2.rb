@@ -1,6 +1,6 @@
 class Jumbo
         puts "first"
-  def main
+  def main key
     puts "a"
   end
 end
@@ -20,4 +20,4 @@ class Jumbo
 end
 puts "urbo"
 jumbo = Jumbo.new
-jumbo.main
+jumbo.main :this

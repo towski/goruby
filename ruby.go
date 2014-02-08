@@ -10,8 +10,8 @@ import("regexp")
 
 type Object struct {
     class *Object
-    name string
-    methods map[string]func(...interface{}) *Object
+    class_name string
+    methods map[string]func(...*Object) *Object
     data string
 }
 
@@ -25,34 +25,47 @@ func(d *Declaration) Unshift() int {
     return current_line
 }
 
-func(d *Declaration) Push(line_number int) {
+func(d *Declaration) Shift(line_number int) {
     d.array = append(d.array, 0)
     copy(d.array[1:], d.array[0:])
     d.array[0] = line_number
 }
 
-func NewObject(class *Object) Object {
-    o := Object{}
-    o.class = class
-    if(o.class == CLASS){
-        o.methods = map[string]func(...interface{}) *Object {}
-    }
-    return o
+func(d *Declaration) Pop() int {
+    var number int
+    number, d.array = d.array[len(d.array)-1], d.array[:len(d.array)-1]
+    return number
 }
 
-func (o *Object) GetMethod(method string) func(...interface{})*Object {
-      fmt.Printf("looking for method %s on %s\n", method, o.class)
+func(d *Declaration) Push(number int) {
+    d.array = append(d.array, number)
+}
+
+func NewObject(class *Object, name string) *Object {
+    o := Object{}
+    o.class = class
+    o.class_name = name
     if(o.class == CLASS){
-      fmt.Printf("looking in here\n")
-        meth, ok := o.methods[method]
-        if(ok){
-            return meth
-        } else {
-      fmt.Printf("looking in here\n")
-            return KERNEL.methods[method]
-        }
+        o.methods = map[string]func(...*Object) *Object {}
+    }
+    return &o
+}
+
+func (o *Object) GetMethod(method string, class_method bool) (func(...*Object)*Object, bool) {
+    meth, ok := o.methods[method]
+    if(ok){
+        return meth, true
     } else {
-        return o.class.GetMethod(method)
+        // append ourself to the call arguments if we're calling a class method
+        args = append(args, nil)
+        copy(args[1:], args[0:])
+        args[0] = o
+        meth, ok2 := o.class.methods[method]
+        if(ok2){
+            return meth, true
+        } else {
+            return KERNEL.methods[method], true
+        }
     }
 }
 
@@ -61,11 +74,11 @@ var classes map[string]*Object
 var constants map[string]Object
 var locals map[string]*Object
 var current_line int
-var args []Object
+var args []*Object
 var first_regex *regexp.Regexp
 var second_regex *regexp.Regexp
 var bytecodeMap map[string]func(...interface{})
-var call_object *Object
+var scope *Object
 var last_return *Object
 var CLASS *Object
 var IO *Object
@@ -73,17 +86,21 @@ var OBJECT *Object
 var KERNEL *Object
 var STRING *Object
 var Nil *Object
+var stack Declaration
+var last_call_name string
 
 func putobject(v ...interface{}){
-    args = append(args, NewObject(OBJECT))
+    var obj = NewObject(STRING, "")
+    obj.data = v[0].(string)
+    args = append(args, obj)
 }
 
 func putself(v ...interface{}){
-    //call_object = "a"
+    //scope = "a"
 }
 
 func putstring(v ...interface{}){
-    var obj = NewObject(STRING)
+    var obj = NewObject(STRING, "")
     obj.data = v[0].(string)
     args = append(args, obj)
 }
@@ -91,7 +108,7 @@ func putstring(v ...interface{}){
 func putnil(v ...interface{}){ }
 
 func getconstant(v ...interface{}){
-    call_object = classes[v[0].(string)]
+    scope = classes[v[0].(string)]
     if(false){
         os.Exit(1)
     }
@@ -99,8 +116,15 @@ func getconstant(v ...interface{}){
 
 func send(v ...interface{}){
     var arr []string = strings.Split(v[0].(string), ",")
-    last_return = call_object.GetMethod(arr[0])(args)
-    args = []Object{}
+    function, ok := scope.GetMethod(arr[0], false)
+    if(ok){
+        last_call_name = arr[0]
+        last_return = function(args...)
+        args = []*Object{}
+    } else {
+        fmt.Printf("Function not defined in scope")
+        os.Exit(1)
+    }
 }
 
 func setlocal(v ...interface{}){
@@ -108,31 +132,42 @@ func setlocal(v ...interface{}){
 }
 
 func getlocal(v ...interface{}){
-    call_object = locals[v[0].(string)]
+    scope = locals[v[0].(string)]
 }
 
 func leave(v ...interface{}){
-    os.Exit(0)
+    if(len(stack.array) != 0){
+        current_line = stack.Pop() + 1
+        scope = KERNEL
+    } else {
+        os.Exit(0)
+    }
 }
 
 func putspecialobject(v ...interface{}){
-  fmt.Printf("%s", v[0].(string))
 }
 
 func defineclass(v ...interface{}){
-  var arr []string = strings.Split(v[0].(string), ",")
-  fmt.Printf("%s\n", arr[1])
-  definition := definition_locations[strings.Trim(arr[1], " ")]
-  fmt.Printf("%d\n", definition.array)
-  call_object := NewObject(CLASS)
-  classes[strings.Trim(arr[0], " ")] = &call_object
-  current_line = definition.Unshift()
-  fmt.Printf("%d\n", current_line)
+    var arr []string = strings.Split(v[0].(string), ",")
+    var location_name string = strings.Trim(arr[1], " ")
+    var name string = strings.Trim(arr[0], " ")
+    var class *Object
+    // right now we expect that multiple class definition locations are in the order that they're called
+    definition := definition_locations[location_name]
+    class, ok := classes[name]
+    if(ok){
+        scope = class
+    } else {
+        scope = NewObject(CLASS, name)
+        classes[name] = scope
+    }
+    stack.Push(current_line)
+    current_line = definition.Unshift()
 }
 
 func step(line string) {
     var starting_number = current_line
-    fmt.Printf("%s\n", line)
+    //fmt.Printf("%s\n", line)
     if(!first_regex.MatchString(line)){
         var match = second_regex.FindStringSubmatch(line)
         if(len(match) > 1){
@@ -146,32 +181,49 @@ func step(line string) {
 }
 
 func setup(){
+    stack = Declaration{}
     CLASS = &Object{}
+    CLASS.methods = map[string]func(...*Object) *Object {}
+    CLASS.methods[":new"] = func(v ...*Object) *Object {
+        var class *Object = v[0]
+        var obj = NewObject(class, "")
+        return obj
+    }
     classes = map[string]*Object {}
     locals = map[string]*Object {}
-    var nil Object = NewObject(CLASS)
-    Nil = &nil
-    var io Object = NewObject(CLASS)
-    IO = &io
-    IO.methods[":new"] = func(v ...interface{}) *Object {
-        var obj = NewObject(IO)
-        return &obj
+    Nil = NewObject(CLASS, "Nil")
+    IO = NewObject(CLASS, "IO")
+    IO.methods[":new"] = func(v ...*Object) *Object {
+        var obj = NewObject(IO, "IO")
+        return obj
     }
-    IO.methods[":puts"] = func(v ...interface{}) *Object {
-        fmt.Printf(v[0].([]Object)[0].data)
+    IO.methods[":puts"] = func(v ...*Object) *Object {
+        fmt.Printf("puts %s\n", v[0].data)
         return Nil
     }
-    var kernel Object = NewObject(CLASS)
-    KERNEL = &kernel
-    KERNEL.methods[":puts"] = func(v ...interface{}) *Object {
-        fmt.Printf(v[0].([]Object)[0].data)
+    KERNEL = NewObject(CLASS, "Kernel")
+    KERNEL.methods[":puts"] = func(v ...*Object) *Object {
+        if(len(v) == 1){
+            fmt.Printf("%s\n", v[0].data)
+        } else {
+            fmt.Printf("%s\n", v[1].data)
+        }
         return Nil
     }
-    KERNEL.methods[":\"core#define_method\""] = func(v ...interface{}) *Object {
-        fmt.Printf("define method")
+    KERNEL.methods[":\"core#define_method\""] = func(v ...*Object) *Object {
+        var name string = v[1].data
+        scope.methods[name] = func(v ...*Object) *Object {
+            var class_name string = v[0].class.class_name
+            // last_call_name is a :symbol, so definition keys have a : added
+            var key = "<class" + class_name + ">" + last_call_name
+            definition := definition_locations[key]
+            stack.Push(current_line)
+            current_line = definition.Unshift()
+            return Nil
+        }
         return Nil
     }
-    call_object = KERNEL
+    scope = KERNEL
     classes[":IO"] = IO
     classes[":Kernel"] = KERNEL
     first_regex, _ = regexp.Compile(`==`)
@@ -219,15 +271,14 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
                 last_class = match[1]
                 key = match[1]
             } else {
-                key = last_class + match[1]
+                key = last_class + ":" + match[1]
             }
             declaration, present := definition_locations[key]
             if(!present){
                 declaration = &Declaration {}
                 definition_locations[key] = declaration
             }
-            declaration.Push(line_number)
-            fmt.Printf("%s\n", key)
+            declaration.Shift(line_number)
             // TODO: handle second file argument
         }
         lines = append(lines, line)
