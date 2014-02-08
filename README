@@ -1,0 +1,8 @@
+A Ruby bytecode interpreter to help me learn golang
+
+./ruby test.rb
+
+test.rb is the only 'working' example right now
+
+You can run ./disassemble.rb test.rb to see the bytecode
+that the go runtime is stepping through.
