@@ -1,5 +1,8 @@
 class Fish
   def hey a, &block
+    puts "a" do
+      puts "d"
+    end
     yield
     puts "a"
   end

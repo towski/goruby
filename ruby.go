@@ -24,6 +24,7 @@ type Declaration struct {
 type Context struct {
     definition map[string]*ByteCode
     line_number string
+    last_return *Object
 }
 
 type Stack struct {
@@ -62,14 +63,14 @@ func(d *Declaration) Shift(line_number int) {
     d.array[0] = line_number
 }
 
-func(s *Stack) Pop() (map[string]*ByteCode, string) {
+func(s *Stack) Pop() (map[string]*ByteCode, string, *Object) {
     var context Context = s.array[len(s.array)-1]
     s.array = s.array[:len(s.array)-1]
-    return context.definition, context.line_number
+    return context.definition, context.line_number, context.last_return
 }
 
-func(s *Stack) Push(definition map[string]*ByteCode, line_number string)  {
-    s.array = append(s.array, Context{definition:definition, line_number:line_number})
+func(s *Stack) Push(definition map[string]*ByteCode, line_number string, last_return *Object)  {
+    s.array = append(s.array, Context{definition:definition, line_number:line_number, last_return:last_return})
 }
 
 func NewObject(class *Object, name string) *Object {
@@ -84,10 +85,12 @@ func NewObject(class *Object, name string) *Object {
 
 func (o *Object) GetMethod(method string, class_method bool) (func(...*Object)*Object, bool) {
     meth, ok := o.methods[method]
+        fmt.Printf("looking for method %s on %p\n", method, o)
     if(ok){
         return meth, true
     } else {
         // append ourself to the call arguments if we're calling a class method
+        fmt.Printf("looking for method %s on %p\n", method, o.class)
         args = append(args, nil)
         copy(args[1:], args[0:])
         args[0] = o
@@ -112,6 +115,7 @@ var second_regex *regexp.Regexp
 var bytecodeMap map[string]func(...interface{})
 var scope *Object
 var last_return *Object
+var current_return *Object
 var CLASS *Object
 var IO *Object
 var OBJECT *Object
@@ -122,6 +126,9 @@ var stack Stack
 var last_call_name string
 var current_definition_location map[string]*ByteCode
 var current_definition_key string
+var block_stack []*map[string]*ByteCode
+var current_block *map[string]*ByteCode
+var current_block_number map[string]int
 
 func putobject(v ...interface{}){
     var obj = NewObject(STRING, "")
@@ -142,23 +149,37 @@ func putstring(v ...interface{}){
 func putnil(v ...interface{}){ }
 
 func getconstant(v ...interface{}){
-    scope = classes[v[0].(string)]
-    if(false){
-        fmt.Printf("Constant not defined in scope")
+    local_scope, ok := classes[v[0].(string)]
+    scope = local_scope
+    if(!ok){
+        fmt.Printf("Constant not defined in scope\n")
         os.Exit(1)
     }
 }
 
 func send(v ...interface{}){
     var arr []string = strings.Split(v[0].(string), ",")
+    fmt.Printf("hey")
     function, ok := scope.GetMethod(arr[0], false)
+    arr[2] = strings.Trim(arr[2], " ")
+    if(arr[2] != "nil"){
+        if (current_block != nil){
+            block_stack = append(block_stack, current_block)
+        }
+        current_block = &definition_locations[arr[2]][current_block_number[arr[2]]]
+        current_block_number[arr[2]] += 1
+    }
     if(ok){
         last_call_name = arr[0]
         last_return = function(args...)
         args = []*Object{}
     } else {
-        fmt.Printf("Function not defined in scope")
+        fmt.Printf("Function not defined in scope %p\n", scope)
         os.Exit(1)
+    }
+    if(arr[2] != "nil" && len(block_stack) > 0){
+        current_block = block_stack[len(block_stack) - 1]
+        block_stack = block_stack[:len(block_stack) - 1]
     }
 }
 
@@ -168,11 +189,12 @@ func setlocal(v ...interface{}){
 
 func getlocal(v ...interface{}){
     scope = locals[v[0].(string)]
+    current_return = scope
 }
 
 func leave(v ...interface{}){
     if(len(stack.array) != 0){
-        current_definition_location, current_line_number = stack.Pop()
+        current_definition_location, current_line_number, last_return = stack.Pop()
         scope = KERNEL
     } else {
         os.Exit(0)
@@ -180,6 +202,12 @@ func leave(v ...interface{}){
 }
 
 func putspecialobject(v ...interface{}){
+}
+
+func invokeblock(v ...interface{}){
+    stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number, current_return)
+    current_line_number = "0000"
+    current_definition_location = *current_block
 }
 
 func defineclass(v ...interface{}){
@@ -196,7 +224,7 @@ func defineclass(v ...interface{}){
         scope = NewObject(CLASS, name)
         classes[name] = scope
     }
-    stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number)
+    stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number, current_return)
     // should be unshift not pop
     current_definition_location = definition[scope.definition_index]
     current_line_number = "0000"
@@ -205,7 +233,7 @@ func defineclass(v ...interface{}){
 
 func step(code *ByteCode) {
     var starting_number = current_line_number
-    fmt.Printf("%s\n", code)
+    fmt.Printf("%s\n", code.code)
     bytecodeMap[code.code](code.params)
     if(starting_number == current_line_number){
         current_line_number = code.next_code.line_number
@@ -220,8 +248,18 @@ func setup(){
     CLASS = &Object{}
     CLASS.methods = map[string]func(...*Object) *Object {}
     CLASS.methods[":new"] = func(v ...*Object) *Object {
-        var class *Object = v[0]
-        var obj = NewObject(class, "")
+        var obj *Object
+        if(len(v) > 0){
+            var class *Object = v[0]
+            fmt.Printf("new class %p\n", class)
+            obj = NewObject(class, "")
+        } else { // call Class.new directly
+            obj = NewObject(CLASS, "erf")
+            classes["erf"] = obj
+            fmt.Printf("new class %p\n", obj)
+            scope = obj
+            invokeblock()
+        }
         return obj
     }
     classes = map[string]*Object {}
@@ -247,10 +285,11 @@ func setup(){
     }
     KERNEL.methods[":\"core#define_method\""] = func(v ...*Object) *Object {
         var name string = v[1].data
+        fmt.Printf("defining method %s on scope %p\n", name, scope)
         scope.methods[name] = func(v ...*Object) *Object {
             var class_name string = v[0].class.class_name
             var key = "<class" + class_name + ">" + last_call_name
-            stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number)
+            stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number, current_return)
             current_line_number = "0000"
             current_definition_location = definition_locations[key][0]
             //definition.Unshift()
@@ -259,8 +298,12 @@ func setup(){
         return Nil
     }
     scope = KERNEL
+      fmt.Printf("Class: %p\n", CLASS)
+      fmt.Printf("Kernel: %p\n", KERNEL)
+      fmt.Printf("Nil: %p\n", Nil)
     classes[":IO"] = IO
     classes[":Kernel"] = KERNEL
+    classes[":Class"] = CLASS
     first_regex, _ = regexp.Compile(`==`)
     second_regex, _ = regexp.Compile(`(^\d+) ([^\(\s]*)([^\(]*)(\(.*){0,1}`)
     bytecodeMap = map[string]func(...interface{}) {
@@ -277,6 +320,7 @@ func setup(){
             "pop": putnil,
             "putself": putself,
             "putiseq": putnil,
+            "invokeblock": invokeblock,
     }
 }
 
@@ -292,7 +336,7 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
     }
     scanner := bufio.NewScanner(strings.NewReader(string(out)))
     definition_locations = map[string][]map[string]*ByteCode{}
-    current_definition_location = map[string]*ByteCode{}
+    current_block_number = map[string]int {} 
     var temp_definition_location map[string]*ByteCode
     var line string
     var last_class string
@@ -307,8 +351,12 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
                 last_class = match[1]
                 key = match[1]
             } else {
-                // last_call_name is a :symbol, so definition keys have a : added
-                key = last_class + ":" + match[1]
+                if len(match[1]) > 7 && match[1][:8] == "block in" {
+                    key = match[1]
+                } else {
+                    // last_call_name is a :symbol, so definition keys have a : added
+                    key = last_class + ":" + match[1]
+                }
             }
             temp_definition_location = map[string]*ByteCode{}
             definition_locations[key] = append(definition_locations[key], temp_definition_location)

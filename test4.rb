@@ -1,7 +1,8 @@
-c = Class.new do
+class Hey
   def hey
-    puts "a"
+    as = "hey"
+    puts "ho"
   end
 end
-obj = c.new
-obj.hey
+obj = Hey.new
+puts obj.hey
