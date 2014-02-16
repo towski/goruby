@@ -13,6 +13,7 @@ type Object struct {
     class_name string
     methods map[string]func(...*Object) *Object
     data string
+    definition_index int
 }
 
 type Declaration struct {
@@ -20,7 +21,37 @@ type Declaration struct {
     file string
 }
 
+type Context struct {
+    definition map[string]*ByteCode
+    line_number string
+}
+
+type Stack struct {
+    array []Context
+}
+
+type ByteCode struct {
+    code string
+    params string
+    line_number string
+    next_code *ByteCode
+}
+
+func NewByteCode(line string) (*ByteCode, string) {
+    var match = second_regex.FindStringSubmatch(line)
+    b := ByteCode{}
+    var line_number string
+    if(len(match) > 2){
+        line_number = match[1]
+        b.line_number = line_number
+        b.code = match[2]
+        b.params = strings.Trim(match[3], " ")
+    }
+    return &b, line_number
+}
+
 func(d *Declaration) Unshift() int {
+    var current_line int
     current_line, d.array = d.array[len(d.array)-1], d.array[:len(d.array)-1]
     return current_line
 }
@@ -31,14 +62,14 @@ func(d *Declaration) Shift(line_number int) {
     d.array[0] = line_number
 }
 
-func(d *Declaration) Pop() int {
-    var number int
-    number, d.array = d.array[len(d.array)-1], d.array[:len(d.array)-1]
-    return number
+func(s *Stack) Pop() (map[string]*ByteCode, string) {
+    var context Context = s.array[len(s.array)-1]
+    s.array = s.array[:len(s.array)-1]
+    return context.definition, context.line_number
 }
 
-func(d *Declaration) Push(number int) {
-    d.array = append(d.array, number)
+func(s *Stack) Push(definition map[string]*ByteCode, line_number string)  {
+    s.array = append(s.array, Context{definition:definition, line_number:line_number})
 }
 
 func NewObject(class *Object, name string) *Object {
@@ -64,16 +95,17 @@ func (o *Object) GetMethod(method string, class_method bool) (func(...*Object)*O
         if(ok2){
             return meth, true
         } else {
-            return KERNEL.methods[method], true
+            meth, ok := KERNEL.methods[method]
+            return meth, ok
         }
     }
 }
 
-var definition_locations map[string] *Declaration
+var definition_locations map[string][]map[string]*ByteCode
 var classes map[string]*Object
 var constants map[string]Object
 var locals map[string]*Object
-var current_line int
+var current_line_number string
 var args []*Object
 var first_regex *regexp.Regexp
 var second_regex *regexp.Regexp
@@ -86,8 +118,10 @@ var OBJECT *Object
 var KERNEL *Object
 var STRING *Object
 var Nil *Object
-var stack Declaration
+var stack Stack
 var last_call_name string
+var current_definition_location map[string]*ByteCode
+var current_definition_key string
 
 func putobject(v ...interface{}){
     var obj = NewObject(STRING, "")
@@ -110,6 +144,7 @@ func putnil(v ...interface{}){ }
 func getconstant(v ...interface{}){
     scope = classes[v[0].(string)]
     if(false){
+        fmt.Printf("Constant not defined in scope")
         os.Exit(1)
     }
 }
@@ -137,7 +172,7 @@ func getlocal(v ...interface{}){
 
 func leave(v ...interface{}){
     if(len(stack.array) != 0){
-        current_line = stack.Pop() + 1
+        current_definition_location, current_line_number = stack.Pop()
         scope = KERNEL
     } else {
         os.Exit(0)
@@ -161,27 +196,27 @@ func defineclass(v ...interface{}){
         scope = NewObject(CLASS, name)
         classes[name] = scope
     }
-    stack.Push(current_line)
-    current_line = definition.Unshift()
+    stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number)
+    // should be unshift not pop
+    current_definition_location = definition[scope.definition_index]
+    current_line_number = "0000"
+    scope.definition_index += 1
 }
 
-func step(line string) {
-    var starting_number = current_line
-    //fmt.Printf("%s\n", line)
-    if(!first_regex.MatchString(line)){
-        var match = second_regex.FindStringSubmatch(line)
-        if(len(match) > 1){
-            var arguments = strings.Trim(match[2], " ")
-            bytecodeMap[match[1]](arguments)
-        }
-    }
-    if(starting_number == current_line){
-        current_line += 1
+func step(code *ByteCode) {
+    var starting_number = current_line_number
+    fmt.Printf("code  %s %s %s\n", code.line_number, code.code, code.params)
+    bytecodeMap[code.code](code.params)
+    if(starting_number == current_line_number){
+        current_line_number = code.next_code.line_number
+        step(code.next_code)
+    } else {
+        step(current_definition_location[current_line_number])
     }
 }
 
 func setup(){
-    stack = Declaration{}
+    stack = Stack{}
     CLASS = &Object{}
     CLASS.methods = map[string]func(...*Object) *Object {}
     CLASS.methods[":new"] = func(v ...*Object) *Object {
@@ -214,11 +249,11 @@ func setup(){
         var name string = v[1].data
         scope.methods[name] = func(v ...*Object) *Object {
             var class_name string = v[0].class.class_name
-            // last_call_name is a :symbol, so definition keys have a : added
             var key = "<class" + class_name + ">" + last_call_name
-            definition := definition_locations[key]
-            stack.Push(current_line)
-            current_line = definition.Unshift()
+            stack.Push(current_definition_location, current_line_number)
+            current_line_number = "0000"
+            current_definition_location = definition_locations[key][0]
+            //definition.Unshift()
             return Nil
         }
         return Nil
@@ -227,7 +262,7 @@ func setup(){
     classes[":IO"] = IO
     classes[":Kernel"] = KERNEL
     first_regex, _ = regexp.Compile(`==`)
-    second_regex, _ = regexp.Compile(`^\d+ ([^\(\s]*)([^\(]*)(\(.*){0,1}`)
+    second_regex, _ = regexp.Compile(`(^\d+) ([^\(\s]*)([^\(]*)(\(.*){0,1}`)
     bytecodeMap = map[string]func(...interface{}) {
             "putobject": putobject,
             "putstring": putstring,
@@ -256,11 +291,12 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
       fmt.Printf("%s", err)
     }
     scanner := bufio.NewScanner(strings.NewReader(string(out)))
-    definition_locations = map[string]*Declaration{}
-    var lines []string
+    definition_locations = map[string][]map[string]*ByteCode{}
+    current_definition_location = map[string]*ByteCode{}
+    var temp_definition_location map[string]*ByteCode
     var line string
     var last_class string
-    var line_number int = 0
+    var last_byte_code *ByteCode
     definition_regex, _ := regexp.Compile(`== disasm: <RubyVM::InstructionSequence:([^@]*)@([^\>]*)>=*`)
     for scanner.Scan() {
         line = scanner.Text()
@@ -271,25 +307,29 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
                 last_class = match[1]
                 key = match[1]
             } else {
+                // last_call_name is a :symbol, so definition keys have a : added
                 key = last_class + ":" + match[1]
             }
-            declaration, present := definition_locations[key]
-            if(!present){
-                declaration = &Declaration {}
-                definition_locations[key] = declaration
-            }
-            declaration.Shift(line_number)
+            temp_definition_location = map[string]*ByteCode{}
+            definition_locations[key] = append(definition_locations[key], temp_definition_location)
             // TODO: handle second file argument
         }
-        lines = append(lines, line)
-        line_number += 1
+        byte_code, line_number := NewByteCode(line)
+        if(last_byte_code != nil){
+            last_byte_code.next_code = byte_code
+        }
+        if(line_number != ""){
+            temp_definition_location[line_number] = byte_code
+            last_byte_code = byte_code
+        }
+        //lines = append(lines, line)
+        //line_number += 1
     }
     // TODO: multiple definition locations
-    main := definition_locations["<main>"]
-    current_line = main.Unshift()
-    for(true){
-        step(lines[current_line])
-    }
+    current_definition_location = definition_locations["<main>"][0]
+    current_line_number = "0000"
+                fmt.Println(current_definition_location[current_line_number].code)
+    step(current_definition_location[current_line_number])
     wg.Done()
 }
 
