@@ -205,7 +205,7 @@ func defineclass(v ...interface{}){
 
 func step(code *ByteCode) {
     var starting_number = current_line_number
-    fmt.Printf("code  %s %s %s\n", code.line_number, code.code, code.params)
+    fmt.Printf("%s\n", code)
     bytecodeMap[code.code](code.params)
     if(starting_number == current_line_number){
         current_line_number = code.next_code.line_number
@@ -250,7 +250,7 @@ func setup(){
         scope.methods[name] = func(v ...*Object) *Object {
             var class_name string = v[0].class.class_name
             var key = "<class" + class_name + ">" + last_call_name
-            stack.Push(current_definition_location, current_line_number)
+            stack.Push(current_definition_location, current_definition_location[current_line_number].next_code.line_number)
             current_line_number = "0000"
             current_definition_location = definition_locations[key][0]
             //definition.Unshift()
@@ -328,7 +328,6 @@ func execute_cmd(cmd string, wg *sync.WaitGroup) {
     // TODO: multiple definition locations
     current_definition_location = definition_locations["<main>"][0]
     current_line_number = "0000"
-                fmt.Println(current_definition_location[current_line_number].code)
     step(current_definition_location[current_line_number])
     wg.Done()
 }

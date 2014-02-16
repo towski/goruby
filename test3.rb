@@ -1,18 +1,10 @@
-class Jumbo
-  def initialize
-    @file = 'hey'
-  end
-
-  def main 
-    ["hey"].each do |i|
-      puts i
-    end
-
-    ["hey"].each do |i|
-      puts i
-    end
+class Fish
+  def hey a, &block
+    yield
+    puts "a"
   end
 end
-
-jumbo = Jumbo.new
-jumbo.main :this
+obj = Fish.new
+obj.hey do
+  puts "b"
+end
