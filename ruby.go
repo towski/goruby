@@ -16,11 +16,6 @@ type Object struct {
     definition_index int
 }
 
-type Declaration struct {
-    array []int
-    file string
-}
-
 type Context struct {
     definition map[string]*ByteCode
     line_number string
@@ -51,18 +46,6 @@ func NewByteCode(line string) (*ByteCode, string) {
     return &b, line_number
 }
 
-func(d *Declaration) Unshift() int {
-    var current_line int
-    current_line, d.array = d.array[len(d.array)-1], d.array[:len(d.array)-1]
-    return current_line
-}
-
-func(d *Declaration) Shift(line_number int) {
-    d.array = append(d.array, 0)
-    copy(d.array[1:], d.array[0:])
-    d.array[0] = line_number
-}
-
 func(s *Stack) Pop() (map[string]*ByteCode, string, *Object) {
     var context Context = s.array[len(s.array)-1]
     s.array = s.array[:len(s.array)-1]
@@ -85,12 +68,12 @@ func NewObject(class *Object, name string) *Object {
 
 func (o *Object) GetMethod(method string, class_method bool) (func(...*Object)*Object, bool) {
     meth, ok := o.methods[method]
-        fmt.Printf("looking for method %s on %p\n", method, o)
+    //fmt.Printf("looking for method %s on %p\n", method, o)
     if(ok){
         return meth, true
     } else {
         // append ourself to the call arguments if we're calling a class method
-        fmt.Printf("looking for method %s on %p\n", method, o.class)
+        //fmt.Printf("looking for method %s on %p\n", method, o.class)
         args = append(args, nil)
         copy(args[1:], args[0:])
         args[0] = o
@@ -115,6 +98,7 @@ var second_regex *regexp.Regexp
 var bytecodeMap map[string]func(...interface{})
 var scope *Object
 var last_return *Object
+var last_statement *Object
 var current_return *Object
 var CLASS *Object
 var IO *Object
@@ -144,6 +128,7 @@ func putstring(v ...interface{}){
     var obj = NewObject(STRING, "")
     obj.data = v[0].(string)
     args = append(args, obj)
+    last_statement = obj
 }
 
 func putnil(v ...interface{}){ }
@@ -159,7 +144,6 @@ func getconstant(v ...interface{}){
 
 func send(v ...interface{}){
     var arr []string = strings.Split(v[0].(string), ",")
-    fmt.Printf("hey")
     function, ok := scope.GetMethod(arr[0], false)
     arr[2] = strings.Trim(arr[2], " ")
     if(arr[2] != "nil"){
@@ -171,7 +155,10 @@ func send(v ...interface{}){
     }
     if(ok){
         last_call_name = arr[0]
-        last_return = function(args...)
+        if(last_return != Nil){
+            args = append(args, last_return)
+        }
+        last_statement = function(args...)
         args = []*Object{}
     } else {
         fmt.Printf("Function not defined in scope %p\n", scope)
@@ -184,17 +171,20 @@ func send(v ...interface{}){
 }
 
 func setlocal(v ...interface{}){
-    locals[v[0].(string)] = last_return
+    args = []*Object{}
+    locals[v[0].(string)] = last_statement
 }
 
 func getlocal(v ...interface{}){
     scope = locals[v[0].(string)]
     current_return = scope
+    last_statement = scope
 }
 
 func leave(v ...interface{}){
     if(len(stack.array) != 0){
         current_definition_location, current_line_number, last_return = stack.Pop()
+        last_return = last_statement
         scope = KERNEL
     } else {
         os.Exit(0)
@@ -231,9 +221,13 @@ func defineclass(v ...interface{}){
     scope.definition_index += 1
 }
 
+func pop(v ...interface{}){
+    last_return = Nil
+}
+
 func step(code *ByteCode) {
     var starting_number = current_line_number
-    fmt.Printf("%s\n", code.code)
+    //fmt.Printf("%s\n", code.code)
     bytecodeMap[code.code](code.params)
     if(starting_number == current_line_number){
         current_line_number = code.next_code.line_number
@@ -251,12 +245,10 @@ func setup(){
         var obj *Object
         if(len(v) > 0){
             var class *Object = v[0]
-            fmt.Printf("new class %p\n", class)
             obj = NewObject(class, "")
         } else { // call Class.new directly
             obj = NewObject(CLASS, "erf")
             classes["erf"] = obj
-            fmt.Printf("new class %p\n", obj)
             scope = obj
             invokeblock()
         }
@@ -266,10 +258,6 @@ func setup(){
     locals = map[string]*Object {}
     Nil = NewObject(CLASS, "Nil")
     IO = NewObject(CLASS, "IO")
-    IO.methods[":new"] = func(v ...*Object) *Object {
-        var obj = NewObject(IO, "IO")
-        return obj
-    }
     IO.methods[":puts"] = func(v ...*Object) *Object {
         fmt.Printf("puts %s\n", v[0].data)
         return Nil
@@ -285,7 +273,7 @@ func setup(){
     }
     KERNEL.methods[":\"core#define_method\""] = func(v ...*Object) *Object {
         var name string = v[1].data
-        fmt.Printf("defining method %s on scope %p\n", name, scope)
+        //fmt.Printf("defining method %s on scope %p\n", name, scope)
         scope.methods[name] = func(v ...*Object) *Object {
             var class_name string = v[0].class.class_name
             var key = "<class" + class_name + ">" + last_call_name
@@ -298,9 +286,6 @@ func setup(){
         return Nil
     }
     scope = KERNEL
-      fmt.Printf("Class: %p\n", CLASS)
-      fmt.Printf("Kernel: %p\n", KERNEL)
-      fmt.Printf("Nil: %p\n", Nil)
     classes[":IO"] = IO
     classes[":Kernel"] = KERNEL
     classes[":Class"] = CLASS
@@ -317,7 +302,7 @@ func setup(){
             "leave": leave,
             "putspecialobject": putspecialobject,
             "defineclass": defineclass,
-            "pop": putnil,
+            "pop": pop,
             "putself": putself,
             "putiseq": putnil,
             "invokeblock": invokeblock,
